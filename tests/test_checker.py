@@ -10,6 +10,11 @@ from agent_trace_canary import Status, assert_no_canary_leak, check_document
 from agent_trace_canary.fixture import SCENARIOS, build_demo_document, synthetic_canary
 
 
+def assert_synthetic_absent(value: str, output: str) -> None:
+    if value in output:
+        pytest.fail("safe output included a synthetic canary", pytrace=False)
+
+
 def test_clean_fixture_passes_with_full_coverage() -> None:
     report = check_document(build_demo_document())
     assert report.status is Status.PASS
@@ -25,7 +30,7 @@ def test_leaky_fixture_fails_at_exact_path_without_echoing_value() -> None:
     assert [(x.scenario_id, x.location) for x in report.findings] == [
         ("tool_exception", "/capture/events/4/payload")
     ]
-    assert synthetic_canary("tool_exception") not in json.dumps(report.to_dict())
+    assert_synthetic_absent(synthetic_canary("tool_exception"), json.dumps(report.to_dict()))
 
 
 @pytest.mark.parametrize("encoding", ["base64", "base64url", "hex", "url"])
@@ -89,7 +94,7 @@ def test_pytest_helper() -> None:
     assert_no_canary_leak(build_demo_document())
     with pytest.raises(AssertionError) as exc:
         assert_no_canary_leak(build_demo_document(leaky=True))
-    assert synthetic_canary("tool_exception") not in str(exc.value)
+    assert_synthetic_absent(synthetic_canary("tool_exception"), str(exc.value))
 
 
 def test_document_is_not_mutated() -> None:
@@ -139,7 +144,7 @@ def test_canary_in_mapping_key_is_detected_without_echoing_key() -> None:
     report = check_document(document)
     assert report.status is Status.LEAK
     assert report.findings[0].location == "/capture/~keys/0"
-    assert canary not in json.dumps(report.to_dict())
+    assert_synthetic_absent(canary, json.dumps(report.to_dict()))
 
 
 def test_control_pointers_cannot_escape_declared_boundaries() -> None:
@@ -163,10 +168,52 @@ def test_report_sanitizes_canaries_from_untrusted_metadata() -> None:
     document["metadata"]["dependencies"]["polluted"] = canary
     report = check_document(document)
     assert report.status is Status.LEAK
-    assert canary not in json.dumps(report.to_dict())
+    assert_synthetic_absent(canary, json.dumps(report.to_dict()))
     with pytest.raises(AssertionError) as exc:
         assert_no_canary_leak(document)
-    assert canary not in str(exc.value)
+    assert_synthetic_absent(canary, str(exc.value))
+
+
+def test_encoded_canary_in_output_identifier_is_redacted() -> None:
+    document = build_demo_document()
+    scenario = document["scenarios"][0]
+    canary = "TEST_ONLY_X"
+    encoded_identifier = canary.encode().hex()
+    scenario["canary"] = canary
+    scenario["scenario_id"] = encoded_identifier
+    scenario["canary_id"] = encoded_identifier
+    scenario["encodings"] = ["raw", "hex"]
+    document["metadata"]["required_scenarios"][0] = encoded_identifier
+    document["controls"]["content_enabled"]["events"][0]["payload"] = canary
+    document["capture"]["events"][0]["payload"] = canary
+
+    report = check_document(document)
+    assert report.status is Status.LEAK
+    assert report.findings[0].scenario_id == "[redacted-id]"
+    assert report.findings[0].canary_id == "[redacted-id]"
+    safe_report = json.dumps(report.to_dict())
+    assert_synthetic_absent(encoded_identifier, safe_report)
+    with pytest.raises(AssertionError) as exc:
+        assert_no_canary_leak(document)
+    assert_synthetic_absent(encoded_identifier, str(exc.value))
+
+
+def test_invalid_scenario_still_sanitizes_encoded_output_identifier() -> None:
+    document = build_demo_document()
+    scenario = document["scenarios"][0]
+    canary = "TEST_ONLY_X"
+    encoded_identifier = canary.encode().hex()
+    scenario.update(
+        canary=canary,
+        scenario_id=encoded_identifier,
+        canary_id=encoded_identifier,
+        encodings=[{}],
+    )
+    document["metadata"]["required_scenarios"][0] = encoded_identifier
+    report = check_document(document)
+    assert report.status is Status.INCONCLUSIVE
+    safe_report = json.dumps(report.to_dict())
+    assert_synthetic_absent(encoded_identifier, safe_report)
 
 
 def test_non_string_encoding_is_inconclusive_not_exception() -> None:

@@ -173,6 +173,54 @@ def _safe_location(
     return f"/capture{location if location != '/' else ''}"
 
 
+def _is_sensitive_report_text(
+    text: str,
+    canaries: list[str],
+) -> bool:
+    if "TEST_ONLY_" in text.upper():
+        return True
+    for canary in canaries:
+        matches, _ = _match_text(text, canary, list(SUPPORTED_ENCODINGS))
+        if matches:
+            return True
+    return False
+
+
+def _sanitize_report(
+    report: CanaryReport,
+    canaries: list[str],
+) -> CanaryReport:
+    """Apply a final fail-closed scrub to every user-influenced report field."""
+    report.findings = [
+        Finding(
+            "[redacted-id]" if _is_sensitive_report_text(item.canary_id, canaries) else item.canary_id,
+            "[redacted-id]" if _is_sensitive_report_text(item.scenario_id, canaries) else item.scenario_id,
+            "/capture/~redacted" if _is_sensitive_report_text(item.location, canaries) else item.location,
+            item.encoding if item.encoding in SUPPORTED_ENCODINGS else "unknown",
+        )
+        for item in report.findings
+    ]
+    report.reasons = [
+        "report detail redacted" if _is_sensitive_report_text(item, canaries) else item
+        for item in report.reasons
+    ]
+    safe_dependencies: dict[str, str] = {}
+    for index, (key, value) in enumerate(report.dependency_versions.items()):
+        safe_key = f"redacted-{index}" if _is_sensitive_report_text(key, canaries) else key
+        safe_value = "[redacted]" if _is_sensitive_report_text(value, canaries) else value
+        safe_dependencies[safe_key] = safe_value
+    report.dependency_versions = safe_dependencies
+    report.exercised_scenarios = [
+        "[redacted-id]" if _is_sensitive_report_text(item, canaries) else item
+        for item in report.exercised_scenarios
+    ]
+    report.checked_scenarios = [
+        "[redacted-id]" if _is_sensitive_report_text(item, canaries) else item
+        for item in report.checked_scenarios
+    ]
+    return report
+
+
 def check_document(document: Any) -> CanaryReport:
     """Check one parsed canary document. Reports never include matched capture text."""
     if not isinstance(document, dict):
@@ -180,6 +228,14 @@ def check_document(document: Any) -> CanaryReport:
 
     metadata = document.get("metadata")
     scenarios = document.get("scenarios")
+    report_canaries = [
+        item.get("canary")
+        for item in scenarios
+        if isinstance(item, dict)
+        and isinstance(item.get("canary"), str)
+        and item["canary"].startswith("TEST_ONLY_")
+        and len(item["canary"]) <= 256
+    ] if isinstance(scenarios, list) else []
     capture_present = "capture" in document
     capture = document.get("capture")
     report = CanaryReport(Status.INCONCLUSIVE)
@@ -197,7 +253,7 @@ def check_document(document: Any) -> CanaryReport:
         report.reasons.append("capture is missing or empty")
     if not isinstance(scenarios, list) or not scenarios:
         report.reasons.append("scenario manifest is missing or empty")
-        return report
+        return _sanitize_report(report, report_canaries)
 
     parsed: list[tuple[str, str, str, list[str], dict[str, Any]]] = []
     seen_ids: set[str] = set()
@@ -271,7 +327,7 @@ def check_document(document: Any) -> CanaryReport:
     if report.findings:
         report.status = Status.LEAK
         report.reasons = []
-        return report
+        return _sanitize_report(report, report_canaries)
 
     for scenario_id, _canary_id, canary, declared, controls in parsed:
         positive_pointer = controls.get("content_enabled_pointer")
@@ -311,4 +367,4 @@ def check_document(document: Any) -> CanaryReport:
         report.status = Status.INCONCLUSIVE
     else:
         report.status = Status.PASS
-    return report
+    return _sanitize_report(report, report_canaries)

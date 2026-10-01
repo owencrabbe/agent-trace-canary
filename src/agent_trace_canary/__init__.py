@@ -11,4 +11,4 @@ __all__ = [
     "assert_no_canary_leak",
     "check_document",
 ]
-__version__ = "0.1.1"
+__version__ = "0.1.2"

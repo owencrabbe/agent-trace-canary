@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — 2026-10-01
+
+- Apply a final fail-closed scrub to every serialized report field against raw and reversible encoded forms of every valid synthetic canary.
+- Redact encoded canaries smuggled into scenario IDs, canary IDs, paths, metadata, coverage lists, or diagnostic messages.
+
 ## 0.1.1 — 2026-10-01
 
 - Detect synthetic canaries in mapping keys.
