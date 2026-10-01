@@ -1,0 +1,7 @@
+agent-trace-canary
+Copyright 2026 Owen Crabbe
+
+This product includes independently authored interoperability examples for
+OpenAI Agents SDK, PydanticAI, and OpenTelemetry. Those dependencies are not
+redistributed and remain subject to their own licenses.
+
