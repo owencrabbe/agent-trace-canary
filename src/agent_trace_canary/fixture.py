@@ -43,7 +43,12 @@ def build_demo_document(*, leaky: bool = False) -> dict[str, Any]:
         )
     return {
         "schema_version": 1,
-        "metadata": {"flush_ok": True, "script_complete": True, "dependencies": {"python": "stdlib-demo"}},
+        "metadata": {
+            "flush_ok": True,
+            "script_complete": True,
+            "required_scenarios": list(SCENARIOS),
+            "dependencies": {"python": "stdlib-demo"},
+        },
         "scenarios": scenarios,
         "controls": {"content_enabled": {"events": positive_events}},
         "capture": {"events": capture_events},

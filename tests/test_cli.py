@@ -48,7 +48,9 @@ def test_cli_separate_jsonl_capture_and_manifest(tmp_path, capsys) -> None:
         encoding="utf-8",
     )
     manifest = {key: value for key, value in document.items() if key != "capture"}
+    manifest["controls"]["content_enabled"] = manifest["controls"]["content_enabled"]["events"]
     for index, scenario in enumerate(manifest["scenarios"]):
+        scenario["controls"]["content_enabled_pointer"] = f"/controls/content_enabled/{index}/payload"
         scenario["controls"]["privacy_enabled_pointer"] = f"/capture/{index}/payload"
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")

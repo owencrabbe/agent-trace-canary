@@ -9,7 +9,7 @@ import json
 import socket
 from typing import Any
 
-from agents import Agent, RunConfig, Runner, function_tool, trace
+from agents import Agent, RunConfig, Runner, UserError, function_tool, trace
 from agents.testing import ScriptedModel, assistant_message, function_call
 from agents.tracing import set_trace_processors
 from agents.tracing.processor_interface import TracingProcessor
@@ -24,6 +24,13 @@ def _block_network() -> None:
 
     socket.create_connection = denied  # type: ignore[assignment]
     socket.socket.connect = denied  # type: ignore[assignment]
+    socket.socket.connect_ex = denied  # type: ignore[assignment]
+    socket.socket.sendto = denied  # type: ignore[assignment]
+    if hasattr(socket.socket, "sendmsg"):
+        socket.socket.sendmsg = denied  # type: ignore[assignment]
+    socket.getaddrinfo = denied  # type: ignore[assignment]
+    socket.gethostbyname = denied  # type: ignore[assignment]
+    socket.gethostbyaddr = denied  # type: ignore[assignment]
 
 
 class LocalProcessor(TracingProcessor):
@@ -52,7 +59,7 @@ class LocalProcessor(TracingProcessor):
         self.flush_ok = True
 
 
-async def _capture(include_content: bool) -> tuple[LocalProcessor, bool]:
+async def _capture(include_content: bool) -> tuple[LocalProcessor, bool, dict[str, Any]]:
     tool_args = synthetic_canary("tool_args")
 
     @function_tool
@@ -60,7 +67,7 @@ async def _capture(include_content: bool) -> tuple[LocalProcessor, bool]:
         """Return a deterministic local result."""
         return synthetic_canary("tool_result") + value[:0]
 
-    model = ScriptedModel(
+    success_model = ScriptedModel(
         [
             [function_call("local_echo", {"value": tool_args}, call_id="call_1")],
             [assistant_message("offline run complete")],
@@ -69,19 +76,55 @@ async def _capture(include_content: bool) -> tuple[LocalProcessor, bool]:
     )
     processor = LocalProcessor()
     set_trace_processors([processor])
-    agent = Agent(name="offline-canary", model=model, tools=[local_echo])
+    agent = Agent(name="offline-canary", model=success_model, tools=[local_echo])
     with trace("offline-canary-control"):
         await Runner.run(
             agent,
             "exercise the local tool",
             run_config=RunConfig(trace_include_sensitive_data=include_content),
         )
-    model.assert_complete()
+    success_model.assert_complete()
+
+    async def raise_synthetic(value: str) -> str:
+        raise ValueError(value)
+
+    local_fail = function_tool(
+        raise_synthetic,
+        name_override="local_fail",
+        failure_error_function=None,
+    )
+    failure_model = ScriptedModel(
+        [[function_call("local_fail", {"value": synthetic_canary("tool_exception")}, call_id="call_2")]],
+        emit_traces=True,
+    )
+    failure_agent = Agent(name="offline-failure-canary", model=failure_model, tools=[local_fail])
+    failure_observed = False
+    try:
+        with trace("offline-canary-failure-control"):
+            await Runner.run(
+                failure_agent,
+                "exercise the failing local tool",
+                run_config=RunConfig(trace_include_sensitive_data=include_content),
+            )
+    except UserError:
+        failure_observed = True
+    failure_model.assert_complete()
     processor.force_flush()
-    return processor, model.remaining_steps == 0
+    function_spans = {
+        span["span_data"]["name"]: span
+        for span in processor.spans
+        if span.get("span_data", {}).get("type") == "function"
+    }
+    boundaries = {
+        "tool_args": function_spans["local_echo"]["span_data"]["input"],
+        "tool_result": function_spans["local_echo"]["span_data"]["output"],
+        "tool_exception": function_spans["local_fail"]["error"]["data"]["error"],
+    }
+    complete = success_model.remaining_steps == 0 and failure_model.remaining_steps == 0 and failure_observed
+    return processor, complete, boundaries
 
 
-def _scenario(scenario_id: str, canary_id: str, index: int, field: str) -> dict[str, Any]:
+def _scenario(scenario_id: str, canary_id: str) -> dict[str, Any]:
     return {
         "scenario_id": scenario_id,
         "canary_id": canary_id,
@@ -89,29 +132,33 @@ def _scenario(scenario_id: str, canary_id: str, index: int, field: str) -> dict[
         "exercised": True,
         "encodings": ["raw", "base64", "base64url", "hex", "url"],
         "controls": {
-            "content_enabled_pointer": f"/controls/content_enabled/spans/{index}/span_data/{field}",
-            "privacy_enabled_pointer": f"/capture/spans/{index}/span_data/{field}",
+            "content_enabled_pointer": f"/controls/content_enabled/boundaries/{scenario_id}",
+            "privacy_enabled_pointer": f"/capture/boundaries/{scenario_id}",
         },
     }
 
 
 async def make_document() -> dict[str, Any]:
     _block_network()
-    positive, positive_complete = await _capture(True)
-    private, private_complete = await _capture(False)
+    positive, positive_complete, positive_boundaries = await _capture(True)
+    private, private_complete, private_boundaries = await _capture(False)
     return {
         "schema_version": 1,
         "metadata": {
             "flush_ok": positive.flush_ok and private.flush_ok,
             "script_complete": positive_complete and private_complete,
+            "required_scenarios": ["tool_args", "tool_result", "tool_exception"],
             "dependencies": {"openai-agents": importlib.metadata.version("openai-agents")},
         },
         "scenarios": [
-            _scenario("tool_args", "openai-01", 1, "input"),
-            _scenario("tool_result", "openai-02", 1, "output"),
+            _scenario("tool_args", "openai-01"),
+            _scenario("tool_result", "openai-02"),
+            _scenario("tool_exception", "openai-03"),
         ],
-        "controls": {"content_enabled": {"spans": positive.spans}},
-        "capture": {"spans": private.spans},
+        "controls": {
+            "content_enabled": {"boundaries": positive_boundaries, "spans": positive.spans}
+        },
+        "capture": {"boundaries": private_boundaries, "spans": private.spans},
     }
 
 

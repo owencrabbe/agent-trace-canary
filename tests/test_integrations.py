@@ -14,7 +14,7 @@ import pytest
 )
 def test_sdk_example_isolated_offline(script: str) -> None:
     completed = subprocess.run(
-        [sys.executable, script],
+        [sys.executable, "tests/network_guard_runner.py", script],
         check=False,
         capture_output=True,
         text=True,
@@ -24,4 +24,3 @@ def test_sdk_example_isolated_offline(script: str) -> None:
     report = json.loads(completed.stdout)
     assert report["status"] == "PASS"
     assert report["dependency_versions"]
-

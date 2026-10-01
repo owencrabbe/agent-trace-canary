@@ -33,6 +33,13 @@ def _block_network() -> None:
 
     socket.create_connection = denied  # type: ignore[assignment]
     socket.socket.connect = denied  # type: ignore[assignment]
+    socket.socket.connect_ex = denied  # type: ignore[assignment]
+    socket.socket.sendto = denied  # type: ignore[assignment]
+    if hasattr(socket.socket, "sendmsg"):
+        socket.socket.sendmsg = denied  # type: ignore[assignment]
+    socket.getaddrinfo = denied  # type: ignore[assignment]
+    socket.gethostbyname = denied  # type: ignore[assignment]
+    socket.gethostbyaddr = denied  # type: ignore[assignment]
 
 
 def _capture(include_content: bool) -> tuple[list[dict[str, Any]], bool, bool]:
@@ -111,6 +118,13 @@ def make_document() -> dict[str, Any]:
         "metadata": {
             "flush_ok": positive_flush and private_flush,
             "script_complete": positive_complete and private_complete,
+            "required_scenarios": [
+                "prompt",
+                "tool_args",
+                "tool_result",
+                "output_validation_retry",
+                "output",
+            ],
             "dependencies": {
                 "pydantic-ai-slim": importlib.metadata.version("pydantic-ai-slim"),
                 "opentelemetry-sdk": importlib.metadata.version("opentelemetry-sdk"),
@@ -136,4 +150,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
